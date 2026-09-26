@@ -1,5 +1,5 @@
 // 撮合引擎（纯内存、零依赖）。
-// 规则：价格优先、时间优先（同价 FIFO）；成交价 = maker（挂单方）的价格。
+// 规则：价格优先、时间优先（同价 FIFO）；成交价 = maker（挂单方）的价格；会和自己挂单成交的订单整单拒绝。
 // 数据结构：每边一个 Map<价格, Level> + 一个有序价格数组（bids 降序 / asks 升序）。
 // 初学者能读懂 > 极致性能；生产引擎（如 Primit 的 Rust 引擎）会用更高效的结构。
 
@@ -29,6 +29,14 @@ export interface Fill {
   ts: number;
 }
 
+/** 新订单会和同一地址自己的挂单成交（自成交 / wash trade），整单拒绝 */
+export class SelfTradeError extends Error {
+  constructor(public readonly makerOrderId: string) {
+    super("拒绝自成交: 该订单会和你自己的挂单成交");
+    this.name = "SelfTradeError";
+  }
+}
+
 /** 一个价格档位：同价的挂单按先来后到排队 */
 interface Level {
   price: bigint;
@@ -43,8 +51,9 @@ export class OrderBook {
   private byId = new Map<string, Order>();
   private seq = 0;
 
-  /** 提交订单：先吃对手盘，limit 剩余挂单，market 剩余丢弃 */
+  /** 提交订单：先吃对手盘，limit 剩余挂单，market 剩余丢弃。会自成交时抛 SelfTradeError，簿不变 */
   submit(input: Omit<Order, "remaining" | "seq" | "ts"> & Partial<Pick<Order, "ts">>): { fills: Fill[]; resting: Order | null } {
+    this.assertNoSelfTrade(input);
     const order: Order = { ...input, remaining: input.qty, seq: ++this.seq, ts: input.ts ?? Date.now() };
     const fills = this.match(order);
 
@@ -108,7 +117,6 @@ export class OrderBook {
       const level = opposite.book.get(bestPrice)!;
       while (taker.remaining > 0n && level.orders.length > 0) {
         const maker = level.orders[0]!;
-        // TODO 生产环境需要 self-trade prevention（自成交会刷量，这里为了简单允许）
         const qty = taker.remaining < maker.remaining ? taker.remaining : maker.remaining;
         taker.remaining -= qty;
         maker.remaining -= qty;
@@ -128,6 +136,20 @@ export class OrderBook {
       }
     }
     return fills;
+  }
+
+  /** 按撮合顺序预演一遍：taker 吃完之前碰到自己的挂单就拒绝（先检查再撮合，保证拒绝时没有任何部分成交） */
+  private assertNoSelfTrade(taker: Pick<Order, "owner" | "side" | "type" | "price" | "qty">): void {
+    const opposite = this.sideOf(taker.side === "buy" ? "sell" : "buy");
+    let left = taker.qty;
+    for (const price of opposite.prices) {
+      if (taker.type === "limit" && !this.crosses(taker.side, taker.price, price)) return;
+      for (const maker of opposite.book.get(price)!.orders) {
+        if (maker.owner === taker.owner) throw new SelfTradeError(maker.id);
+        left -= maker.remaining;
+        if (left <= 0n) return;
+      }
+    }
   }
 
   /** 买单价 >= 卖一 / 卖单价 <= 买一 才能成交 */

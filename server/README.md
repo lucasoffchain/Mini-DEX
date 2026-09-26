@@ -3,7 +3,7 @@
 教学用链下撮合后端：撮合引擎 + 内存账本 + EIP-712 登录 + Vault 事件监听。**不落库，重启即丢。**
 
 ```
-src/engine/orderbook.ts   撮合引擎（价格-时间优先，成交价 = maker 价）
+src/engine/orderbook.ts   撮合引擎（价格-时间优先，成交价 = maker 价，拒绝自成交）
 src/engine/orderbook.test.ts
 src/fixed.ts              8 位小数定点数 <-> 十进制字符串
 src/ledger.ts             内存账本 available / locked
@@ -13,7 +13,9 @@ src/marketmaker.ts        做市：把 Binance 盘口镜像到本所订单簿（
 src/routes.ts             HTTP API（下单冻结 / 成交划转 / 撤单解冻）
 src/ws.ts                 WebSocket 广播
 src/index.ts              入口
+src/mmbot.ts              做市机器人的报价逻辑：围绕参考价买卖各 N 档（+test）
 scripts/smoke.ts          冒烟脚本
+scripts/mm-bot.ts         独立做市机器人进程（npm run mm:bot）
 ```
 
 ## 快速开始
@@ -64,6 +66,26 @@ cd ../contracts && forge script script/Deploy.s.sol --broadcast --rpc-url http:/
 做市账户 `MM_ADDRESS` 是账本里的普通地址，启动时按 `MM_SEED_USDC` / `MM_SEED_WAVAX` 虚拟注资（设 0 则只用它真实 deposit 的钱）。
 `GET /config` 会多返回 `marketMaker: {address, symbol, source}`，前端据此在订单簿右上角显示"流动性镜像 Binance"。
 下单 / 撤单核心已抽成 `routes.ts` 里的 `placeOrder` / `cancelOrder`，HTTP 接口和做市模块共用同一套冻结 / 撮合 / 结算逻辑。
+
+## 做市机器人（独立进程）：买卖两侧各挂 3 档
+
+`scripts/mm-bot.ts` 是一个像真实做市商那样的外部程序：用自己的钱包走 EIP-712 登录，通过 HTTP API 下单 / 撤单。
+
+```bash
+npm run dev                         # 终端 1：后端
+npm run mm:bot                      # 终端 2：机器人（Ctrl+C 退出时撤掉自己的挂单）
+MM_BOT_ONCE=1 npm run mm:bot        # 只挂一轮就退出，挂单留在簿上
+```
+
+- 参考价 mid：Binance `MM_BOT_SYMBOL` 买一卖一中间价 → 拿不到时用本所别人的买一卖一中间价 → 再拿不到用 `MM_BOT_FALLBACK_PRICE`。
+- 第 i 档（i = 0,1,2）价格 = mid × (1 ∓ (`MM_BOT_HALF_SPREAD_BPS` + i × `MM_BOT_STEP_BPS`) / 10000)，买价向下、卖价向上取整到 0.0001。
+- 只挂单不吃单：会和别人挂单交叉的档位直接跳过；每轮用 `planQuotes` 增量撤挂，先撤后挂，不会撞上自己的单（撮合引擎拒绝自成交）。
+- 钱包：`MM_BOT_KEY`；不填则随机生成，离线模式下自动领 `/dev/faucet`。链上模式需要先给这个地址 deposit。
+- 报价逻辑在 `src/mmbot.ts`（纯函数，`src/mmbot.test.ts` 覆盖）。
+
+## 自成交（self-trade）
+新订单如果会和**同一地址自己的挂单**成交，撮合引擎整单拒绝（`SelfTradeError`，HTTP 返回 400），订单簿和余额都不变；
+检查在撮合之前做，所以不会出现"先吃了别人一部分、再碰到自己"的半成交。
 
 ## 接口速查
 见课程设计文档 §3.4。金额全部是十进制字符串（"100.5"），内部 bigint × 1e8。

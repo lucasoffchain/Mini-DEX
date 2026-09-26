@@ -1,5 +1,6 @@
 # Foundry 编译产物
 out/
+docs/
 cache/
 # 部署记录（里面有 tx hash / 地址，本地 anvil 的没必要提交）
 broadcast/

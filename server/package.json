@@ -11,7 +11,9 @@
     "typecheck": "tsc --noEmit",
     "smoke": "tsx scripts/smoke.ts",
     "e2e": "tsx scripts/e2e-anvil.ts",
-    "prep:fuji": "tsx scripts/prep-fuji.ts"
+    "prep:fuji": "tsx scripts/prep-fuji.ts",
+    "mm:bot": "tsx scripts/mm-bot.ts",
+    "fuji:demo": "tsx scripts/fuji-demo.ts"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.7",

@@ -114,7 +114,14 @@ export function createRoutes(d: RoutesDeps) {
     }
 
     // 2. 撮合
-    const { fills, resting } = book.submit({ id, owner, side, type, price, qty });
+    let result: ReturnType<OrderBook["submit"]>;
+    try {
+      result = book.submit({ id, owner, side, type, price, qty });
+    } catch (e) {
+      releaseLock(id, owner, side); // 被拒（如自成交）：簿没动，把刚冻结的退回
+      throw e;
+    }
+    const { fills, resting } = result;
 
     // 3. 结算每笔成交
     for (const f of fills) settle(f);
